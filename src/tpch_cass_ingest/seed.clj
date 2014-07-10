@@ -1,72 +1,139 @@
 (ns tpch-cass-ingest.seed
   (:require [clojure.string :as s]
             [qbits.alia :as alia]
+            [qbits.hayt :as hayt]
+            [clj-time.coerce :as c]
             [tpch-cass-ingest.cassandra-connector :as cass]))
 
-(def prepared-statements (atom {}))
+(defmulti parse (fn [table line] table))
+(defmulti perform-insert (fn [table obj] table))
 
-(defn ps [line-type statement]
-  (let [pstat (get @prepared-statements line-type)]
-    (if pstat pstat
-      (let [new-pstat (alia/prepare cass/session statement)]
-        (swap! prepared-statements #(assoc % line-type new-pstat))
-        new-pstat))))
+(defmethod perform-insert :default [table obj]
+  (hayt/insert table (hayt/values obj)))
 
-(defmulti parse (fn [line-type line] line-type))
-(defmulti inserter identity)
-(defmulti perform-insert (fn [line-type obj] line-type))
+(defn perform-batch-insert [table lines]
+  (alia/execute
+    cass/session
+    (hayt/batch
+      (apply hayt/queries (map #(perform-insert table (parse table %)) lines)))))
 
-(defmethod perform-insert :default [line-type obj]
-  (alia/execute cass/session (inserter line-type) {:values obj}))
-
-(defmethod parse :supplier [line-type line]
+(defmethod parse :suppliers [table line]
   (let [[supp-id supp-name address 
          nation-id phone account-balance commnt] (map s/trim (s/split line #"\|"))]
-    [(Long/parseLong supp-id) supp-name address
-     (Long/parseLong nation-id) phone 
-     (BigDecimal. account-balance) commnt]))
+    {:id (Long/parseLong supp-id)
+     :name supp-name
+     :address address
+     :nation_id (Long/parseLong nation-id)
+     :phone phone 
+     :account_balance (BigDecimal. account-balance)
+     :comment commnt}))
 
-(defmethod inserter :supplier [_]
-  (ps :supplier "insert into suppliers(id,name,address,nation_id,phone,account_balance,comment) values(?,?,?,?,?,?,?)"))
-
-
-(defmethod parse :part [line-type line]
+(defmethod parse :parts [table line]
   (let [[part-id part-name manufacturer
          brand part-type size container 
          retail-price cmmnt] (map s/trim (s/split line #"\|"))]
-    [(Long/parseLong part-id) part-name manufacturer
-     brand part-type (Integer/parseInt size) container 
-     (BigDecimal. retail-price) cmmnt]))
+    {:id (Long/parseLong part-id)
+     :name part-name
+     :manufacturer manufacturer
+     :brand brand
+     :type part-type
+     :size (Integer/parseInt size)
+     :container container 
+     :retail_price (BigDecimal. retail-price)
+     :comment cmmnt}))
 
-(defmethod inserter :part [_]
-  (ps :part "insert into parts(id,name,manufacturer,brand,type,size,container,retail_price,comment)
-                             values(?,?,?,?,?,?,?,?,?)"))
-
-(defmethod parse :supplier-part [line-type line]
+(defmethod parse :suppliers_parts [table line]
   (let [[part-id supp-id quantity cost] (map s/trim (s/split line #"\|"))]
-    [(Long/parseLong supp-id) (Long/parseLong part-id) (Integer/parseInt quantity) (BigDecimal. cost)]))
+    {:supplier_id (Long/parseLong supp-id)
+     :part_id (Long/parseLong part-id)
+     :quantity (Integer/parseInt quantity)
+     :cost (BigDecimal. cost)}))
 
-(defmethod inserter :supplier-part [_]
-  (ps :supplier-part "insert into suppliers_parts (supplier_id, part_id, quantity,cost)
-                             values(?,?,?,?)"))
+(defmethod perform-insert :supplier-part [table obj]
+  (hayt/insert table (hayt/values obj))
+  (hayt/update :parts
+               (hayt/set-columns :suppliers [+ (first obj)])
+               (hayt/where [[= :id (second obj)]]))
+  (hayt/update :suppliers
+               (hayt/set-columns :parts [+ (second obj)])
+               (hayt/where [[= :id (first obj)]])))
 
-(defmethod perform-insert :supplier-part [line-type obj]
-  (let [inserter (inserter line-type)
-        part-update (ps :update-part "update parts set suppliers=suppliers+? where id=?")
-        supplier-update (ps :update-supplier "update suppliers set parts=parts+? where id=?")]
-    (alia/execute cass/session inserter {:values obj})
-    (alia/execute cass/session part-update {:values [ #{(first obj)} (second obj)]})
-    (alia/execute cass/session supplier-update {:values [#{(second obj)} (first obj)]})))
+(defmethod parse :regions [table line]
+  (let [[region-id region-name commnt] (map s/trim (s/split line #"\|"))]
+    {:id (Long/parseLong region-id)
+     :name region-name
+     :comment commnt}))
 
-(defn load-data [path line-type]
-  (let [content (slurp path)
-        lines (s/split-lines content)
-        objects (map #(parse line-type %) lines)]
-    (doseq [obj objects] (perform-insert line-type obj))))
+(defmethod parse :nations [table line]
+  (let [[nation-id nation-name region-id commnt] (map s/trim (s/split line #"\|"))]
+    {:id (Long/parseLong nation-id)
+     :name nation-name
+     :region_id (Long/parseLong region-id)
+     :comment commnt}))
+
+(defmethod parse :customers [table line]
+  (let [[cust-id cust-name address nation-id
+         phone account-balance market-segment commnt] (map s/trim (s/split line #"\|"))]
+    {:id (Long/parseLong cust-id)
+     :name cust-name
+     :address address
+     :nation_id (Long/parseLong nation-id)
+     :phone phone
+     :account_balance (BigDecimal. account-balance)
+     :market_segment market-segment
+     :comment commnt}))
+
+(defmethod parse :orders [table line]
+  (let [[order-id cust-id status total-price
+         date priority clerk ship-priority commnt] (map s/trim (s/split line #"\|"))]
+    {:id (Long/parseLong order-id)
+     :customer_id (Long/parseLong cust-id)
+     :status status
+     :total_price (BigDecimal. total-price)
+     :date (c/to-date date)
+     :priority priority
+     :clert clerk
+     :ship_priority (Integer/parseInt ship-priority)
+     :comment commnt}))
+
+(defmethod parse :line_items [table line]
+  (let [[order-id part-id supp-id
+         line-number quantity extended-price discount
+         tax return-flag status ship-date commit-date
+         receipt-date ship-instruct ship-mode commnt] (map s/trim (s/split line #"\|"))]
+    {:order_id (Long/parseLong order-id)
+     :part_id (Long/parseLong part-id)
+     :supplier_id (Long/parseLong supp-id)
+     :line_number (Integer/parseInt line-number)
+     :quantity (Integer/parseInt quantity)
+     :extended_price (BigDecimal. extended-price)
+     :discount (BigDecimal. discount)
+     :tax (BigDecimal. tax)
+     :return_flag return-flag
+     :status status
+     :ship_date (c/to-date ship-date)
+     :commit_date (c/to-date commit-date)
+     :receipt_date (c/to-date receipt-date)
+     :ship_instruct ship-instruct
+     :ship_mode ship-mode
+     :comment commnt}))
+
+(defn apply-batch [n f lines]
+  (if (<= n (count lines))
+    (f lines)
+    (map #(f %) (partition-all n lines))))
+
+(defn load-data [file table]
+  (with-open [reader (clojure.java.io/reader file)]
+    (let [lines (line-seq reader)]
+      (apply-batch 10 #(perform-batch-insert table %) lines))))
 
 (defn load-all []
-  (load-data "data/partsupp.tbl" :supplier-part))
-
-(defn -main []
-  (load-all))
-
+  (load-data "data/supplier.tbl" :suppliers)
+  (load-data "data/part.tbl" :parts)
+  (load-data "data/partsupp.tbl" :suppliers_parts)
+  (load-data "data/region.tbl" :regions)
+  (load-data "data/nation.tbl" :nations)
+  (load-data "data/customer.tbl" :customers)
+  (load-data "data/orders.tbl" :orders)
+  (load-data "data/lineitem.tbl" :line_items))
