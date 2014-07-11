@@ -92,7 +92,7 @@
      :total_price (BigDecimal. total-price)
      :date (c/to-date date)
      :priority priority
-     :clert clerk
+     :clerk clerk
      :ship_priority (Integer/parseInt ship-priority)
      :comment commnt}))
 
@@ -118,15 +118,11 @@
      :ship_mode ship-mode
      :comment commnt}))
 
-(defn apply-batch [n f lines]
-  (if (<= n (count lines))
-    (f lines)
-    (map #(f %) (partition-all n lines))))
-
 (defn load-data [file table]
   (with-open [reader (clojure.java.io/reader file)]
     (let [lines (line-seq reader)]
-      (apply-batch 10 #(perform-batch-insert table %) lines))))
+      (doseq [ls (partition-all 10 lines)]
+        (perform-batch-insert table ls)))))
 
 (defn load-all []
   (load-data "data/supplier.tbl" :suppliers)
