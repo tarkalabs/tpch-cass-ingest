@@ -47,7 +47,7 @@
     {:supplier_id (Long/parseLong supp-id)
      :part_id (Long/parseLong part-id)
      :quantity (Integer/parseInt quantity)
-     :cost (BigDecimal. cost)}))
+     :cost (BigDecimal. ^String cost)}))
 
 (defmethod perform-insert :supplier-part [table obj]
   (hayt/insert table (hayt/values obj))
@@ -79,7 +79,7 @@
      :address address
      :nation_id (Long/parseLong nation-id)
      :phone phone
-     :account_balance (BigDecimal. account-balance)
+     :account_balance (BigDecimal. ^String account-balance)
      :market_segment market-segment
      :comment commnt}))
 
@@ -89,7 +89,7 @@
     {:id (Long/parseLong order-id)
      :customer_id (Long/parseLong cust-id)
      :status status
-     :total_price (BigDecimal. total-price)
+     :total_price (BigDecimal. ^String total-price)
      :date (c/to-date date)
      :priority priority
      :clerk clerk
