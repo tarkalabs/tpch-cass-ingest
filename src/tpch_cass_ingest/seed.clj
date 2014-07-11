@@ -4,7 +4,7 @@
             [qbits.hayt :as hayt]
             [clj-time.coerce :as c]
             [tpch-cass-ingest.cassandra-connector :as cass]))
-
+(set! *warn-on-reflection* true)
 (defmulti parse (fn [table line] table))
 (defmulti perform-insert (fn [table obj] table))
 
@@ -25,7 +25,7 @@
      :address address
      :nation_id (Long/parseLong nation-id)
      :phone phone 
-     :account_balance (BigDecimal. account-balance)
+     :account_balance (BigDecimal. ^String account-balance)
      :comment commnt}))
 
 (defmethod parse :parts [table line]
@@ -39,7 +39,7 @@
      :type part-type
      :size (Integer/parseInt size)
      :container container 
-     :retail_price (BigDecimal. retail-price)
+     :retail_price (BigDecimal. ^String retail-price)
      :comment cmmnt}))
 
 (defmethod parse :suppliers_parts [table line]
@@ -106,9 +106,9 @@
      :supplier_id (Long/parseLong supp-id)
      :line_number (Integer/parseInt line-number)
      :quantity (Integer/parseInt quantity)
-     :extended_price (BigDecimal. extended-price)
-     :discount (BigDecimal. discount)
-     :tax (BigDecimal. tax)
+     :extended_price (BigDecimal. ^String extended-price)
+     :discount (BigDecimal. ^String discount)
+     :tax (BigDecimal. ^String tax)
      :return_flag return-flag
      :status status
      :ship_date (c/to-date ship-date)
@@ -120,9 +120,12 @@
 
 (defn load-data [file table]
   (with-open [reader (clojure.java.io/reader file)]
-    (let [lines (line-seq reader)]
-      (doseq [ls (partition-all 10 lines)]
-        (perform-batch-insert table ls)))))
+    (let [lines (line-seq reader)
+          counter (atom 1)]
+      (doseq [ls (partition-all 1000 lines)]
+        (println (str "scheduling insert for " table " " (* @counter 1000)))
+        (swap! counter inc)
+        (future (perform-batch-insert table ls))))))
 
 (defn load-all []
   (load-data "data/supplier.tbl" :suppliers)
